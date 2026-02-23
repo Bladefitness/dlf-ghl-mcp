@@ -1,0 +1,22 @@
+{
+  "name": "ghl-mcp-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.0.5",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "agents": "^0.0.66",
+    "hono": "^4.7.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars and fill in your values
+# These are used by `wrangler dev` for local development
+
+GHL_API_KEY=your-ghl-private-integration-token
+GHL_LOCATION_ID=your-ghl-location-id
