@@ -1,5 +1,5 @@
 /**
- * GHL MCP Server v2.0.0 — Modular Cloudflare Worker
+ * GHL MCP Server v2.0.1 — Modular Cloudflare Worker
  *
  * A remote MCP server giving AI agents full control over GoHighLevel
  * across multiple sub-accounts. Built with Hono routing, modular tools,
@@ -7,27 +7,25 @@
  *
  * Architecture:
  *   OAuthProvider wraps the entire worker:
- *     /mcp       → McpAgent Durable Object (240 tools)
- *     /authorize → OAuth approval flow
+ *     /mcp       → McpAgent Durable Object (254 tools)
+ *     /authorize → OAuth auto-approve (private server)
  *     /token     → OAuth token endpoint
  *     /register  → OAuth client registration
- *     /*         → Hono app (health, CORS, admin)
+ *     /*         → defaultHandler (health, CORS)
  */
 
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Hono } from "hono";
-import { cors } from "hono/cors";
 
 import type { Env } from "./types";
 import { CONFIG } from "./config";
 import { Logger } from "./utils";
 import { registerAllTools } from "./tools";
 
-// ============================================================
+// =============================================================
 // MCP Agent (Durable Object)
-// ============================================================
+// =============================================================
 
 export class GHLMcpAgent extends McpAgent<Env> {
   server = new McpServer({
@@ -41,81 +39,83 @@ export class GHLMcpAgent extends McpAgent<Env> {
   }
 }
 
-// ============================================================
-// Hono App (default handler for non-MCP routes)
-// ============================================================
+// =============================================================
+// Default Handler (raw fetch — needed for OAUTH_PROVIDER access)
+// =============================================================
 
-const app = new Hono<{ Bindings: Env }>();
 const log = new Logger("http");
 
-// Global CORS
-app.use(
-  "*",
-  cors({
-    origin: "*",
-    allowMethods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-    allowHeaders: [
-      "Content-Type",
-      "Authorization",
-      "Accept",
-      "X-Requested-With",
-      "mcp-session-id",
-      "mcp-protocol-version",
-    ],
-  })
-);
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Authorization, Accept, X-Requested-With, mcp-session-id, mcp-protocol-version",
+};
 
-// Health check
-app.get("/", (c) => {
-  return c.json({
-    status: "ok",
-    server: CONFIG.MCP.NAME,
-    version: CONFIG.MCP.VERSION,
-    mcp_endpoint: "/mcp",
-  });
-});
+const defaultHandler = {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<Response> {
+  const url = new URL(request.url);
 
-app.get("/health", (c) => {
-  return c.json({
-    status: "ok",
-    server: CONFIG.MCP.NAME,
-    version: CONFIG.MCP.VERSION,
-    mcp_endpoint: "/mcp",
-  });
-});
+  // Handle CORS preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
 
-// OAuth authorize — auto-approve for owner
-app.get("/authorize", async (c) => {
-  const oauthReqInfo = c.req.query();
-  log.info("OAuth authorize request", { client_id: oauthReqInfo.client_id });
+  // Health checks
+  if (url.pathname === "/" || url.pathname === "/health") {
+    return Response.json(
+      {
+        status: "ok",
+        server: CONFIG.MCP.NAME,
+        version: CONFIG.MCP.VERSION,
+        mcp_endpoint: "/mcp",
+      },
+      { headers: CORS_HEADERS }
+    );
+  }
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: `/approve?${new URLSearchParams(oauthReqInfo).toString()}`,
-    },
-  });
-});
+  // OAuth authorize — auto-approve for owner (private server)
+  if (url.pathname === "/authorize") {
+    const oauthReqInfo = await (env as any).OAUTH_PROVIDER.parseAuthRequest(
+      request
+    );
+    log.info("OAuth authorize request", {
+      client_id: oauthReqInfo?.clientId,
+    });
 
-app.post("/approve", async (c) => {
-  // The OAuthProvider handles the actual approval flow
-  // This is a fallback for any direct POST requests
-  return c.json({ error: "Use the OAuth flow via /authorize" }, 400);
-});
+    const { redirectTo } = await (
+      env as any
+    ).OAUTH_PROVIDER.completeAuthorization({
+      request: oauthReqInfo,
+      userId: "owner",
+      metadata: { label: "GHL MCP Owner" },
+      scope: oauthReqInfo.scope,
+      props: { userId: "owner" },
+    });
 
-// Catch-all 404
-app.all("*", (c) => {
-  return c.json({ error: "Not found", hint: "MCP endpoint is at /mcp" }, 404);
-});
+    return Response.redirect(redirectTo, 302);
+  }
 
-// ============================================================
+  // Catch-all 404
+  return Response.json(
+    { error: "Not found", hint: "MCP endpoint is at /mcp" },
+    { status: 404, headers: CORS_HEADERS }
+  );
+  },
+};
+
+// =============================================================
 // Export: OAuthProvider wraps everything
-// ============================================================
+// =============================================================
 
 export default new OAuthProvider({
   apiRoute: "/mcp",
   apiHandler: GHLMcpAgent.serve("/mcp"),
-  defaultHandler: app,
+  defaultHandler: defaultHandler,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
