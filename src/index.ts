@@ -22,6 +22,40 @@ import type { Env } from "./types";
 import { CONFIG } from "./config";
 import { Logger } from "./utils";
 import { registerAllTools } from "./tools";
+import { initErrorsDb, logError } from "./db/errors";
+import { sendErrorWebhook } from "./utils/webhook";
+import { initOAuthTable } from "./db/accounts";
+import { handleOAuthCallback } from "./handlers/oauth-callback";
+
+// =============================================================
+// Error capture helper (fire-and-forget — never blocks MCP response)
+// =============================================================
+
+function captureError(
+  env: Env,
+  toolName: string,
+  args: Record<string, unknown>,
+  errorText: string
+): void {
+  (async () => {
+    try {
+      await initErrorsDb(env.GHL_DB);
+      const errorId = await logError(env.GHL_DB, toolName, errorText, args);
+      if (env.ERROR_WEBHOOK_URL) {
+        await sendErrorWebhook(env.ERROR_WEBHOOK_URL, {
+          tool: toolName,
+          error: errorText,
+          args,
+          error_id: errorId,
+          timestamp: new Date().toISOString(),
+          source: "ghl-mcp-v2",
+        });
+      }
+    } catch {
+      // Never let error capture crash the worker
+    }
+  })();
+}
 
 // =============================================================
 // MCP Agent (Durable Object)
@@ -35,6 +69,23 @@ export class GHLMcpAgent extends McpAgent<Env> {
 
   async init() {
     const env = this.env;
+
+    // Auto-capture errors from every tool without touching individual handlers
+    const originalTool = this.server.tool.bind(this.server);
+    (this.server as any).tool = (name: string, desc: string, schema: any, handler: any) => {
+      return originalTool(name, desc, schema, async (args: any) => {
+        const result = await handler(args);
+        if (result?.isError) {
+          const errorText = result.content?.[0]?.text ?? "Unknown error";
+          captureError(env, name, args, errorText);
+        }
+        return result;
+      });
+    };
+
+    // Ensure OAuth table exists at startup
+    await initOAuthTable(env.GHL_DB);
+
     registerAllTools(this.server, env);
   }
 }
@@ -78,6 +129,11 @@ const defaultHandler = {
     );
   }
 
+  // GHL OAuth callback — handles agency app install
+  if (url.pathname === "/callback" && request.method === "GET") {
+    return handleOAuthCallback(request, env);
+  }
+
   // OAuth authorize — auto-approve for owner (private server)
   if (url.pathname === "/authorize") {
     const oauthReqInfo = await (env as any).OAUTH_PROVIDER.parseAuthRequest(
@@ -114,8 +170,8 @@ const defaultHandler = {
 
 export default new OAuthProvider({
   apiRoute: "/mcp",
-  apiHandler: GHLMcpAgent.serve("/mcp"),
-  defaultHandler: defaultHandler,
+  apiHandler: GHLMcpAgent.serve("/mcp") as any,
+  defaultHandler: defaultHandler as any,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",

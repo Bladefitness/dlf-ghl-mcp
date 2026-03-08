@@ -19,10 +19,10 @@ export function err(e: any) {
  * Resolve a GHLClient from environment + optional locationId.
  *
  * Resolution order:
- *   1. locationId provided and found in D1 -> use its stored API key
- *   2. locationId provided but not in D1   -> use env.GHL_API_KEY with that location
- *   3. No locationId                        -> use D1 default account
- *   4. No default in D1                    -> fall back to env.GHL_API_KEY + env.GHL_LOCATION_ID
+ *   1. locationId provided and found in D1 → use its stored API key
+ *   2. locationId provided but not in D1   → use env.GHL_API_KEY with that location
+ *   3. No locationId                        → use D1 default account
+ *   4. No default in D1                    → fall back to env.GHL_API_KEY + env.GHL_LOCATION_ID
  */
 export async function resolveClient(
   env: Env,
