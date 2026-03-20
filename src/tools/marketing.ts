@@ -1434,4 +1434,190 @@ export function registerMarketingTools(server: McpServer, env: Env) {
       }
     }
   );
+
+  // ==========================================================
+  // FUNNEL BUILDER (EXTENDED)
+  // ==========================================================
+
+  server.tool(
+    "ghl_create_funnel",
+    "Create a new funnel/website in a location.",
+    {
+      name: z.string().describe("Funnel name"),
+      type: z.string().optional().describe("Funnel type (e.g. funnel, website)"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ name, type, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.createFunnel(locationId || client.locationId, { name, type });
+        return ok(`Funnel created!\n\n${JSON.stringify(result, null, 2)}`);
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_create_funnel_step",
+    "Create a new step/page within an existing funnel.",
+    {
+      funnelId: z.string().describe("Funnel ID to add the step to"),
+      name: z.string().describe("Step/page name"),
+      type: z.string().optional().describe("Step type"),
+      url: z.string().optional().describe("Step URL slug"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ funnelId, name, type, url, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.createFunnelStep(funnelId, { name, type, url });
+        return ok(`Funnel step created!\n\n${JSON.stringify(result, null, 2)}`);
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_get_page_data",
+    "Get the full section/content data for a funnel page (builder payload).",
+    {
+      pageId: z.string().describe("Page ID"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ pageId, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.getPageData(pageId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_get_page_metadata",
+    "Get metadata (title, SEO settings, URL) for a specific funnel page.",
+    {
+      pageId: z.string().describe("Page ID"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ pageId, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.getPageMetadata(pageId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_list_funnel_entities",
+    "List funnel folder entities (funnels and folders) for a location. More detailed than ghl_list_funnels.",
+    {
+      type: z.string().optional().describe("Filter by type (e.g. funnel, website)"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ type, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.listFunnelEntities(locationId, type);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_get_funnel",
+    "Get full details for a specific funnel by ID.",
+    {
+      funnelId: z.string().describe("Funnel ID"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ funnelId, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.getFunnel(funnelId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_list_section_templates",
+    "List saved section templates available in the funnel builder for a location.",
+    {
+      limit: z.number().optional().describe("Max results"),
+      offset: z.number().optional().describe("Offset for pagination"),
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ limit, offset, locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.listSectionTemplates(locationId, limit, offset);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_list_prebuilt_sections",
+    "List GHL prebuilt page sections available in the funnel builder.",
+    {
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.listPrebuiltSections(locationId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_list_domains",
+    "List all domains configured for a location.",
+    {
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.listDomains(locationId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  server.tool(
+    "ghl_list_custom_fonts",
+    "List custom fonts uploaded for a location.",
+    {
+      locationId: z.string().optional().describe("Target location"),
+    },
+    async ({ locationId }) => {
+      try {
+        const client = await resolveClient(env, locationId);
+        const result = await client.marketing.listCustomFonts(locationId);
+        return ok(JSON.stringify(result, null, 2));
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
 }

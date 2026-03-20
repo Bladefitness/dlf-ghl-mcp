@@ -19,6 +19,7 @@ import { registerMarketplaceTools } from "./marketplace";
 import { registerKnowledgeBaseTools } from "./knowledge-base";
 import { registerErrorTools } from "./errors";
 import { registerWorkflowBuilderTools } from "./workflow-builder";
+import { registerSiteBuilderTools } from "./site-builder";
 
 export function registerAllTools(server: McpServer, env: Env) {
   registerAccountsTools(server, env);
@@ -39,4 +40,5 @@ export function registerAllTools(server: McpServer, env: Env) {
   registerKnowledgeBaseTools(server, env);
   registerErrorTools(server, env);
   registerWorkflowBuilderTools(server, env);
+  registerSiteBuilderTools(server, env);
 }

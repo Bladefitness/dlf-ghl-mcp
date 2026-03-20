@@ -597,5 +597,80 @@ export function marketingMethods(client: BaseGHLClient) {
         version: "2021-07-28",
       });
     },
+
+    // ========== FUNNEL BUILDER (EXTENDED) ==========
+
+    async createFunnel(locationId: string, data: { name: string; type?: string }) {
+      return client.request<any>("POST", `/funnels/funnel/create`, {
+        body: { ...data, locationId: locationId || client.locationId },
+        version: "2021-07-28",
+      });
+    },
+
+    async createFunnelStep(funnelId: string, step: { name: string; type?: string; url?: string }) {
+      return client.request<any>("POST", `/funnels/funnel/create-step`, {
+        body: { ...step, funnelId },
+        version: "2021-07-28",
+      });
+    },
+
+    async getPageData(pageId: string) {
+      return client.request<any>("GET", `/funnels/builder/page/data`, {
+        query: { pageId },
+        version: "2021-07-28",
+      });
+    },
+
+    async getPageMetadata(pageId: string) {
+      return client.request<any>("GET", `/funnels/page/${pageId}`, {
+        version: "2021-07-28",
+      });
+    },
+
+    async listFunnelEntities(locationId?: string, type?: string) {
+      const q: Record<string, string> = { locationId: locationId || client.locationId };
+      if (type) q.type = type;
+      return client.request<any>("GET", `/funnels/funnel/folder/entities`, {
+        query: q,
+        version: "2021-07-28",
+      });
+    },
+
+    async getFunnel(funnelId: string) {
+      return client.request<any>("GET", `/funnels/funnel/fetch/${funnelId}`, {
+        version: "2021-07-28",
+      });
+    },
+
+    async listSectionTemplates(locationId?: string, limit?: number, offset?: number) {
+      const q: Record<string, string> = { locationId: locationId || client.locationId };
+      if (limit !== undefined) q.limit = String(limit);
+      if (offset !== undefined) q.offset = String(offset);
+      return client.request<any>("GET", `/funnels/builder/section-template`, {
+        query: q,
+        version: "2021-07-28",
+      });
+    },
+
+    async listPrebuiltSections(locationId?: string) {
+      return client.request<any>("GET", `/funnels/builder/prebuilt-section`, {
+        query: { locationId: locationId || client.locationId },
+        version: "2021-07-28",
+      });
+    },
+
+    async listDomains(locationId?: string) {
+      return client.request<any>("GET", `/funnels/domain/`, {
+        query: { locationId: locationId || client.locationId },
+        version: "2021-07-28",
+      });
+    },
+
+    async listCustomFonts(locationId?: string) {
+      return client.request<any>("GET", `/funnels/custom-fonts`, {
+        query: { locationId: locationId || client.locationId },
+        version: "2021-07-28",
+      });
+    },
   };
 }
