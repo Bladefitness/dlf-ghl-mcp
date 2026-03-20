@@ -134,6 +134,7 @@ async function internalRequest<T>(
     Accept: "application/json",
     channel: "APP",
     source: "WEB_USER",
+    Version: "2021-07-28",
     "token-id": token,
     Authorization: `Bearer ${token}`,
   };
