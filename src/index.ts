@@ -231,6 +231,62 @@ function pinRequired(): Response {
   );
 }
 
+function buildAuthPage(clientName: string, queryString: string, error: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authorize - DLF Agency MCP</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:32px;max-width:400px;width:100%}
+h1{font-size:1.25rem;margin-bottom:4px;color:#f8fafc}
+.sub{color:#94a3b8;font-size:.85rem;margin-bottom:24px}
+.app{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:16px;margin-bottom:24px}
+.app-name{font-weight:600;color:#38bdf8;font-size:1rem}
+.app-perms{color:#94a3b8;font-size:.8rem;margin-top:8px}
+.app-perms li{margin-top:4px}
+label{display:block;font-size:.85rem;color:#94a3b8;margin-bottom:6px}
+input[type=password]{width:100%;padding:10px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:.95rem;margin-bottom:16px}
+input:focus{outline:none;border-color:#38bdf8}
+.btns{display:flex;gap:10px}
+button{flex:1;padding:10px;border:none;border-radius:6px;font-size:.9rem;font-weight:600;cursor:pointer}
+.approve{background:#38bdf8;color:#0f172a}
+.approve:hover{background:#7dd3fc}
+.deny{background:#334155;color:#94a3b8}
+.deny:hover{background:#475569}
+.err{background:#7f1d1d;color:#fca5a5;padding:8px 12px;border-radius:6px;font-size:.85rem;margin-bottom:16px}
+.footer{text-align:center;color:#475569;font-size:.75rem;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Authorize Access</h1>
+<p class="sub">DLF Agency GHL MCP Server</p>
+<div class="app">
+<div class="app-name">${clientName}</div>
+<ul class="app-perms">
+<li>Access GoHighLevel API tools (508 tools)</li>
+<li>Read and write contacts, workflows, calendars</li>
+<li>Manage automations and conversations</li>
+</ul>
+</div>
+${error ? '<div class="err">' + error + '</div>' : ''}
+<form method="POST" action="/authorize${queryString}">
+<label for="pin">Admin PIN</label>
+<input type="password" id="pin" name="pin" placeholder="Enter admin PIN to authorize" required autofocus>
+<div class="btns">
+<button type="submit" name="action" value="approve" class="approve">Authorize</button>
+<button type="submit" name="action" value="deny" class="deny">Deny</button>
+</div>
+</form>
+<p class="footer">Only authorize apps you trust.</p>
+</div>
+</body>
+</html>`;
+}
+
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
@@ -396,62 +452,64 @@ const defaultHandler = {
     return handleAdmin(request, env);
   }
 
-  // OAuth authorize — allow registered OAuth clients (browser redirect flow),
-  // admin PIN, admin session, or valid user key
+  // OAuth authorize — shows consent/login screen, requires PIN to approve
   if (url.pathname === "/authorize") {
-    // Check if this is a registered OAuth client (browser redirect from Claude.ai etc.)
     const clientId = url.searchParams.get("client_id");
-    const hasRegisteredClient = clientId
-      ? !!(await env.OAUTH_KV.get(`client:${clientId}`))
-      : false;
+    const clientName = clientId
+      ? await (async () => {
+          const raw = await env.OAUTH_KV.get(`client:${clientId}`);
+          if (!raw) return "Unknown App";
+          try { return JSON.parse(raw).clientName || "Unknown App"; } catch { return "Unknown App"; }
+        })()
+      : "Unknown App";
 
-    const hasPin = await checkAdminPin(request, env);
-    const hasSession = await (async () => {
-      const cookie = request.headers.get("Cookie") ?? "";
-      const match = cookie.match(/admin_session=([^;]+)/);
-      if (!match) return false;
-      const raw = await env.OAUTH_KV.get(`admin_session_${match[1]}`);
-      if (!raw) return false;
-      try {
-        const session = JSON.parse(raw) as { valid: boolean };
-        return session.valid === true;
-      } catch {
-        return false;
+    // POST = form submission with PIN
+    if (request.method === "POST") {
+      const body = await request.formData();
+      const pin = body.get("pin") as string;
+      const action = body.get("action") as string;
+
+      if (action === "deny") {
+        const redirectUri = url.searchParams.get("redirect_uri") || "";
+        const state = url.searchParams.get("state") || "";
+        return Response.redirect(`${redirectUri}?error=access_denied&state=${state}`, 302);
       }
-    })();
-    const hasUserKey = await (async () => {
-      const uk = request.headers.get("X-User-Key") || url.searchParams.get("user_key");
-      if (!uk) return false;
-      await initUsersDb(env.GHL_DB);
-      const u = await getUserByApiKey(env.GHL_DB, uk);
-      return !!u && u.status === "active";
-    })();
 
-    if (!hasRegisteredClient && !hasPin && !hasSession && !hasUserKey) {
-      return Response.json(
-        { error: "Unauthorized", hint: "OAuth authorize requires a registered client_id, admin PIN, admin session, or valid user key." },
-        { status: 401, headers: CORS_HEADERS }
+      // Verify PIN
+      const { timingSafeEqual } = await import("node:crypto");
+      const storedPin = (env as any).ADMIN_PIN || "";
+      const pinBuf = new TextEncoder().encode(pin || "");
+      const storedBuf = new TextEncoder().encode(storedPin);
+      const pinValid = pinBuf.length === storedBuf.length && timingSafeEqual(pinBuf, storedBuf);
+
+      if (!pinValid) {
+        return new Response(buildAuthPage(clientName, url.search, "Invalid PIN. Try again."), {
+          status: 200,
+          headers: { "Content-Type": "text/html", ...CORS_HEADERS },
+        });
+      }
+
+      // PIN correct — approve the authorization
+      const oauthReqInfo = await (env as any).OAUTH_PROVIDER.parseAuthRequest(
+        new Request(url.toString(), { method: "GET" })
       );
+      log.info("OAuth authorized via consent screen", { client_id: clientId });
+
+      const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
+        request: oauthReqInfo,
+        userId: "owner",
+        metadata: { label: "GHL MCP Owner" },
+        scope: oauthReqInfo.scope,
+        props: { userId: "owner" },
+      });
+      return Response.redirect(redirectTo, 302);
     }
 
-    const oauthReqInfo = await (env as any).OAUTH_PROVIDER.parseAuthRequest(
-      request
-    );
-    log.info("OAuth authorize request (admin-authenticated)", {
-      client_id: oauthReqInfo?.clientId,
+    // GET = show consent screen
+    return new Response(buildAuthPage(clientName, url.search, ""), {
+      status: 200,
+      headers: { "Content-Type": "text/html", ...CORS_HEADERS },
     });
-
-    const { redirectTo } = await (
-      env as any
-    ).OAUTH_PROVIDER.completeAuthorization({
-      request: oauthReqInfo,
-      userId: "owner",
-      metadata: { label: "GHL MCP Owner" },
-      scope: oauthReqInfo.scope,
-      props: { userId: "owner" },
-    });
-
-    return Response.redirect(redirectTo, 302);
   }
 
   // Catch-all 404
