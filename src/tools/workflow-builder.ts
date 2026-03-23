@@ -597,6 +597,89 @@ export function registerWorkflowBuilderTools(server: McpServer, env: Env) {
   );
 
   // ==========================================================
+  // AUTO-SAVE (Advanced Canvas sync)
+  // ==========================================================
+
+  server.tool(
+    "ghl_workflow_builder_auto_save",
+    "Auto-save a workflow with advanced canvas format. This syncs steps and triggers to Firebase/Firestore so they render correctly in the advanced canvas builder. Call this AFTER save_steps and create_trigger to make everything visible in the UI.",
+    {
+      workflowId: z.string().describe("Workflow ID"),
+      templates: z
+        .string()
+        .describe("JSON string of the templates (action steps) array with advanceCanvasMeta positions"),
+      triggers: z
+        .string()
+        .optional()
+        .describe("JSON string of triggers array (each needs id, type, name, conditions, actions, targetActionId)"),
+      userId: z
+        .string()
+        .optional()
+        .describe("User ID performing the save (default: empty)"),
+      locationId: z.string().optional().describe("Target location ID"),
+    },
+    async ({ workflowId, templates, triggers, userId, locationId }) => {
+      try {
+        let parsedTemplates: any[];
+        try {
+          parsedTemplates = JSON.parse(templates);
+          if (!Array.isArray(parsedTemplates)) {
+            throw new Error("templates must be a JSON array");
+          }
+        } catch (e: any) {
+          return err(new Error(`Invalid templates JSON: ${e.message}`));
+        }
+
+        let parsedTriggers: any[] = [];
+        if (triggers) {
+          try {
+            parsedTriggers = JSON.parse(triggers);
+            if (!Array.isArray(parsedTriggers)) {
+              throw new Error("triggers must be a JSON array");
+            }
+          } catch (e: any) {
+            return err(new Error(`Invalid triggers JSON: ${e.message}`));
+          }
+        }
+
+        const client = getBuilderClient(env, locationId);
+        const result = await client.autoSaveWorkflow(workflowId, {
+          templates: parsedTemplates,
+          triggers: parsedTriggers,
+          userId,
+        });
+        return ok(
+          `Auto-save complete. Workflow synced to advanced canvas.\n\n${JSON.stringify(result, null, 2)}`
+        );
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  // ==========================================================
+  // CREATE LOCATION TAG
+  // ==========================================================
+
+  server.tool(
+    "ghl_workflow_builder_create_tag",
+    "Create a tag at the location level. Required before using a tag in trigger conditions — without this, the trigger tag renders blank in the UI.",
+    {
+      tag: z.string().describe("Tag name to create"),
+      locationId: z.string().optional().describe("Target location ID"),
+    },
+    async ({ tag, locationId }) => {
+      try {
+        const client = getBuilderClient(env, locationId);
+        const result = await client.createLocationTag(tag);
+        return ok(`Tag "${tag}" created.\n\n${JSON.stringify(result, null, 2)}`);
+      } catch (e: any) {
+        return err(e);
+      }
+    }
+  );
+
+  // ==========================================================
   // ERROR COUNT
   // ==========================================================
 

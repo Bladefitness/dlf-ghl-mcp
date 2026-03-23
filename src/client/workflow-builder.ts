@@ -1,63 +1,57 @@
 /**
  * GHL Internal Workflow Builder Client
  * Uses backend.leadconnectorhq.com (undocumented internal API)
- * Auth: JWT via token-id header
- * Auto-refreshes tokens using GHL's /auth/refresh endpoint + KV cache
+ * Auth: Firebase JWT via token-id header
+ * Auto-refreshes tokens using Firebase securetoken API + KV cache
  */
 
 const INTERNAL_BASE = "https://backend.leadconnectorhq.com";
+const FIREBASE_API_KEY = "AIzaSyB_w3vXmsI7WeQtrIOkjR6xTRVN5uOieiE";
 const KV_TOKEN_KEY = "ghl_firebase_id_token";
-const KV_REFRESH_KEY = "ghl_refresh_token";
-const KV_TOKEN_TTL = 3300; // 55 minutes (tokens last 60, refresh early)
+const KV_TOKEN_TTL = 3300; // 55 minutes (Firebase tokens last 60, refresh early)
 
 export interface WorkflowBuilderConfig {
   firebaseToken: string;
   locationId: string;
-  kv?: KVNamespace; // for caching refreshed tokens
-  refreshToken?: string; // GHL RS256 refresh token (30 days, rotates on use)
+  kv?: KVNamespace;
+  refreshToken?: string; // Firebase refresh token (never expires)
 }
 
 /**
- * Refresh a GHL session token using GHL's /auth/refresh endpoint.
- * Returns a fresh JWT (usable as token-id) and a new refresh token.
- * The refresh token rotates on each use — always store the new one.
+ * Refresh a Firebase ID token using the securetoken REST API.
+ * Firebase refresh tokens do not expire -- they persist until revoked.
+ * Returns a fresh ID token (usable as token-id header value).
  */
-async function refreshGHLToken(refreshToken: string): Promise<{ jwt: string; refreshJwt: string }> {
-  const resp = await fetch(`${INTERNAL_BASE}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", channel: "APP" },
-    body: JSON.stringify({ refreshToken }),
-  });
+async function refreshFirebaseToken(refreshToken: string): Promise<{ idToken: string; refreshToken: string }> {
+  const resp = await fetch(
+    `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+    }
+  );
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(`GHL token refresh failed (${resp.status}): ${err}`);
+    throw new Error(`Firebase token refresh failed (${resp.status}): ${err}`);
   }
-  const data = await resp.json() as { jwt: string; refreshJwt: string };
-  return { jwt: data.jwt, refreshJwt: data.refreshJwt };
+  const data = await resp.json() as { id_token: string; refresh_token: string; expires_in: string };
+  return { idToken: data.id_token, refreshToken: data.refresh_token };
 }
 
 /**
  * Get a valid token for the token-id header, using KV cache or refreshing as needed.
  */
 async function getValidToken(config: WorkflowBuilderConfig): Promise<string> {
-  // If we have KV and a refresh token, use the cache + auto-refresh flow
   if (config.kv && config.refreshToken) {
     const cached = await config.kv.get(KV_TOKEN_KEY);
     if (cached) return cached;
 
-    // Cache miss or expired — get latest refresh token (may have been rotated)
-    const currentRefresh = await config.kv.get(KV_REFRESH_KEY) || config.refreshToken;
-
-    // Refresh via GHL's endpoint
-    const { jwt, refreshJwt } = await refreshGHLToken(currentRefresh);
-
-    // Cache the new token and store the rotated refresh token
-    await config.kv.put(KV_TOKEN_KEY, jwt, { expirationTtl: KV_TOKEN_TTL });
-    await config.kv.put(KV_REFRESH_KEY, refreshJwt);
-    return jwt;
+    const { idToken } = await refreshFirebaseToken(config.refreshToken);
+    await config.kv.put(KV_TOKEN_KEY, idToken, { expirationTtl: KV_TOKEN_TTL });
+    return idToken;
   }
 
-  // Fallback: use the static token from config (may be expired)
   return config.firebaseToken;
 }
 
@@ -73,7 +67,7 @@ async function internalRequest<T>(
     "Content-Type": "application/json",
     Accept: "application/json",
     channel: "APP",
-    Authorization: `Bearer ${token}`,
+    "token-id": token,
   };
 
   const resp = await fetch(`${INTERNAL_BASE}${path}`, {
@@ -84,11 +78,9 @@ async function internalRequest<T>(
 
   // If 401/403 and we have refresh capability, force-refresh and retry once
   if ((resp.status === 401 || resp.status === 403) && config.kv && config.refreshToken) {
-    const currentRefresh = await config.kv.get(KV_REFRESH_KEY) || config.refreshToken;
-    const { jwt, refreshJwt } = await refreshGHLToken(currentRefresh);
-    await config.kv.put(KV_TOKEN_KEY, jwt, { expirationTtl: KV_TOKEN_TTL });
-    await config.kv.put(KV_REFRESH_KEY, refreshJwt);
-    headers["Authorization"] = `Bearer ${jwt}`;
+    const { idToken } = await refreshFirebaseToken(config.refreshToken);
+    await config.kv.put(KV_TOKEN_KEY, idToken, { expirationTtl: KV_TOKEN_TTL });
+    headers["token-id"] = idToken;
 
     const retry = await fetch(`${INTERNAL_BASE}${path}`, {
       method,
@@ -275,6 +267,95 @@ export function workflowBuilderMethods(config: WorkflowBuilderConfig) {
         config,
         "DELETE",
         `/workflow/${loc}/trigger/${triggerId}`
+      );
+    },
+
+    // ===== AUTO-SAVE (Advanced Canvas sync) =====
+
+    async autoSaveWorkflow(
+      workflowId: string,
+      data: {
+        templates: any[];
+        triggers?: any[];
+        userId?: string;
+      }
+    ) {
+      // GET current workflow to build the full auto-save payload
+      const current = await this.getWorkflow(workflowId);
+
+      const now = new Date().toISOString();
+
+      // Enable advanced canvas
+      const meta = current.meta || {};
+      meta.advanceCanvasMeta = {
+        enabled: true,
+        enabledAt: meta.advanceCanvasMeta?.enabledAt || now,
+      };
+
+      // Add advanceCanvasMeta positions to steps
+      const stepsWithMeta = (data.templates || []).map((step: any, idx: number) => ({
+        ...step,
+        cat: step.cat ?? "",
+        order: step.order ?? idx,
+        advanceCanvasMeta: step.advanceCanvasMeta || {
+          position: { x: 400 + idx * 300, y: 0 },
+        },
+      }));
+
+      // Format triggers for auto-save
+      const triggerList = (data.triggers || []).map((t: any) => ({
+        ...t,
+        workflow_id: t.workflow_id || workflowId,
+        location_id: t.location_id || loc,
+        belongs_to: t.belongs_to || "workflow",
+        deleted: false,
+        date_added: t.date_added || now,
+        date_updated: now,
+        advanceCanvasMeta: t.advanceCanvasMeta || {
+          position: { x: 57.5, y: -73 },
+        },
+      }));
+
+      const body = {
+        ...current,
+        status: current.status || "draft",
+        meta,
+        workflowData: { templates: stepsWithMeta },
+        triggersChanged: triggerList.length > 0,
+        oldTriggers: triggerList,
+        newTriggers: triggerList,
+        isAutoSave: true,
+        autoSaveSession: {
+          workflowId,
+          id: crypto.randomUUID(),
+          userId: data.userId || "",
+          version: current.version || 1,
+          inProgress: true,
+        },
+        scheduledPauseDates: [],
+        modifiedSteps: [],
+        deletedSteps: [],
+        createdSteps: [],
+        senderAddress: current.senderAddress || {},
+        eventStartDate: current.eventStartDate || "",
+      };
+
+      return internalRequest<any>(
+        config,
+        "PUT",
+        `/workflow/${loc}/${workflowId}/auto-save`,
+        body
+      );
+    },
+
+    // ===== TAG CREATION =====
+
+    async createLocationTag(tag: string) {
+      return internalRequest<any>(
+        config,
+        "POST",
+        `/workflow/${loc}/tags/create`,
+        { tag }
       );
     },
 
