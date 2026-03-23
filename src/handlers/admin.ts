@@ -957,7 +957,129 @@ ${DASHBOARD_JS}
 }
 
 // ---------------------------------------------------------------------------
-// Route handler (unchanged)
+// Token management handler — Bearer auth only, no session required
+// ---------------------------------------------------------------------------
+
+async function handleAdminToken(request: Request, env: Env, path: string): Promise<Response> {
+  const authHeader = request.headers.get("Authorization") ?? "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const storedPin = (env.ADMIN_PIN ?? "").trim();
+  if (!storedPin || !(await timingSafeEqual(bearerToken, storedPin))) {
+    return Response.json({ error: "Unauthorized" }, { status: 401, headers: CORS_HEADERS });
+  }
+
+  const KV_ID_TOKEN_KEY = "ghl_firebase_id_token";
+  const KV_REFRESH_KEY = "ghl_refresh_token";
+  const KV_ID_TOKEN_TTL = 3300; // 55 minutes
+  const FIREBASE_REFRESH_URL =
+    "https://securetoken.googleapis.com/v1/token?key=AIzaSyB_w3vXmsI7WeQtrIOkjR6xTRVN5uOieiE";
+
+  // GET /admin/token/status
+  if (path === "/admin/token/status" && request.method === "GET") {
+    const cachedIdToken = await env.OAUTH_KV.get(KV_ID_TOKEN_KEY);
+    const refreshTokenPresent =
+      !!env.GHL_FIREBASE_REFRESH_TOKEN ||
+      !!(await env.OAUTH_KV.get(KV_REFRESH_KEY));
+
+    let idTokenExpiresIn: number | null = null;
+    if (cachedIdToken) {
+      try {
+        const parts = cachedIdToken.split(".");
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1])) as { exp?: number };
+          if (payload.exp) {
+            idTokenExpiresIn = payload.exp - Math.floor(Date.now() / 1000);
+          }
+        }
+      } catch {
+        idTokenExpiresIn = null;
+      }
+    }
+
+    return Response.json(
+      { idTokenCached: !!cachedIdToken, refreshTokenPresent, idTokenExpiresIn },
+      { headers: CORS_HEADERS }
+    );
+  }
+
+  // POST /admin/token/refresh
+  if (path === "/admin/token/refresh" && request.method === "POST") {
+    const refreshToken =
+      env.GHL_FIREBASE_REFRESH_TOKEN ||
+      (await env.OAUTH_KV.get(KV_REFRESH_KEY));
+
+    if (!refreshToken) {
+      return Response.json(
+        { error: "No refresh token available. Seed one via POST /admin/token/seed" },
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+
+    let firebaseResp: Response;
+    try {
+      firebaseResp = await fetch(FIREBASE_REFRESH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+      });
+    } catch (err) {
+      return Response.json(
+        { error: `Firebase request failed: ${String(err)}` },
+        { status: 502, headers: CORS_HEADERS }
+      );
+    }
+
+    if (!firebaseResp.ok) {
+      const body = await firebaseResp.text();
+      return Response.json(
+        { error: `Firebase refresh failed (${firebaseResp.status}): ${body}` },
+        { status: 502, headers: CORS_HEADERS }
+      );
+    }
+
+    const data = (await firebaseResp.json()) as {
+      id_token: string;
+      refresh_token: string;
+      expires_in: string;
+    };
+
+    const expiresIn = parseInt(data.expires_in, 10) || 3600;
+    const ttl = Math.min(expiresIn - 300, KV_ID_TOKEN_TTL);
+
+    await env.OAUTH_KV.put(KV_ID_TOKEN_KEY, data.id_token, { expirationTtl: ttl });
+    await env.OAUTH_KV.put(KV_REFRESH_KEY, data.refresh_token);
+
+    return Response.json(
+      { success: true, idToken: data.id_token, expiresIn },
+      { headers: CORS_HEADERS }
+    );
+  }
+
+  // POST /admin/token/seed
+  if (path === "/admin/token/seed" && request.method === "POST") {
+    let body: { refreshToken?: string };
+    try {
+      body = (await request.json()) as { refreshToken?: string };
+    } catch {
+      return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: CORS_HEADERS });
+    }
+
+    if (!body.refreshToken || typeof body.refreshToken !== "string" || !body.refreshToken.trim()) {
+      return Response.json(
+        { error: "refreshToken is required and must be a non-empty string" },
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+
+    await env.OAUTH_KV.put(KV_REFRESH_KEY, body.refreshToken.trim());
+    return Response.json({ ok: true, message: "Refresh token stored in KV" }, { headers: CORS_HEADERS });
+  }
+
+  return Response.json({ error: "Not found" }, { status: 404, headers: CORS_HEADERS });
+}
+
+// ---------------------------------------------------------------------------
+// Route handler
 // ---------------------------------------------------------------------------
 
 export async function handleAdmin(request: Request, env: Env): Promise<Response> {
@@ -994,6 +1116,12 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   if (path === "/admin/logout" && request.method === "POST") {
     await destroySession(request, env.OAUTH_KV);
     return new Response(null, { status: 302, headers: { Location: "/admin", "Set-Cookie": clearCookie(), ...CORS_HEADERS } });
+  }
+
+  // /admin/token/* routes use Bearer token auth (ADMIN_PIN), not browser sessions.
+  // Early return here so they are never hit by the session redirect below.
+  if (path.startsWith("/admin/token")) {
+    return handleAdminToken(request, env, path);
   }
 
   const valid = await validateSession(request, env.OAUTH_KV);

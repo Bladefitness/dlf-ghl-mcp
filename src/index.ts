@@ -335,6 +335,68 @@ const defaultHandler = {
     );
   }
 
+  // CLI token endpoint — returns cached Firebase token for the SuperSpeed CLI.
+  // The token is already a short-lived JWT (55-min TTL) cached in KV.
+  // Requires the ADMIN_PIN as query param for basic auth.
+  if (url.pathname === "/cli/token" && request.method === "GET") {
+    const pin = url.searchParams.get("pin") || "";
+    const storedPin = (env.ADMIN_PIN ?? "").trim();
+    if (!storedPin || pin !== storedPin) {
+      return Response.json({ error: "Invalid pin" }, { status: 401, headers: CORS_HEADERS });
+    }
+    const cached = await env.OAUTH_KV.get("ghl_firebase_id_token");
+    if (cached) {
+      return Response.json({ token: cached }, { headers: CORS_HEADERS });
+    }
+    // No cached token — try to refresh
+    const refreshToken = (env as any).GHL_FIREBASE_REFRESH_TOKEN;
+    if (!refreshToken) {
+      return Response.json({ error: "No token available" }, { status: 404, headers: CORS_HEADERS });
+    }
+    try {
+      const resp = await fetch(
+        `https://securetoken.googleapis.com/v1/token?key=AIzaSyB_w3vXmsI7WeQtrIOkjR6xTRVN5uOieiE`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+        }
+      );
+      if (!resp.ok) {
+        return Response.json({ error: "Firebase refresh failed" }, { status: 502, headers: CORS_HEADERS });
+      }
+      const data = await resp.json() as { id_token: string };
+      await env.OAUTH_KV.put("ghl_firebase_id_token", data.id_token, { expirationTtl: 3300 });
+      return Response.json({ token: data.id_token }, { headers: CORS_HEADERS });
+    } catch (e: any) {
+      return Response.json({ error: e.message }, { status: 500, headers: CORS_HEADERS });
+    }
+  }
+
+  // CLI auto-save proxy — lets the SuperSpeed engine call auto-save through the worker's
+  // auto-refreshing Firebase token. Scoped to workflow auto-save only.
+  if (url.pathname === "/cli/auto-save" && request.method === "POST") {
+    const pin = url.searchParams.get("pin") || request.headers.get("x-admin-pin") || "";
+    const storedPin = (env.ADMIN_PIN ?? "").trim();
+    if (!storedPin || pin !== storedPin) {
+      return Response.json({ error: "Invalid pin" }, { status: 401, headers: CORS_HEADERS });
+    }
+    try {
+      const body = await request.json() as { locationId: string; workflowId: string; payload: any };
+      const { workflowBuilderMethods } = await import("./client/workflow-builder");
+      const client = workflowBuilderMethods({
+        firebaseToken: (env as any).GHL_FIREBASE_TOKEN || "",
+        refreshToken: (env as any).GHL_FIREBASE_REFRESH_TOKEN,
+        kv: env.OAUTH_KV,
+        locationId: body.locationId,
+      });
+      const result = await client.autoSaveWorkflow(body.workflowId, body.payload);
+      return Response.json(result, { headers: CORS_HEADERS });
+    } catch (e: any) {
+      return Response.json({ error: e.message }, { status: 500, headers: CORS_HEADERS });
+    }
+  }
+
   // GHL OAuth callback — handles agency app install
   if (url.pathname === "/callback" && request.method === "GET") {
     return handleOAuthCallback(request, env);
